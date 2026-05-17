@@ -1,0 +1,12 @@
+# Binaries
+kubemcp
+/cmd/server/server
+
+# Logs
+*.log
+*.jsonl
+
+# Vendor and IDE
+vendor/
+.idea/
+.vscode/
