@@ -1,59 +1,87 @@
 # Kube-MCP
 
-**Kube-MCP** is an open-source Model Context Protocol (MCP) server that exposes a Kubernetes cluster as a structured set of AI-callable tools. It enables LLM agents (like Claude, GPT-4, and local models) to introspect, diagnose, and eventually remediate cluster issues through natural language—without requiring users to know `kubectl` commands or complex YAML schemas.
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MCP Protocol](https://img.shields.io/badge/MCP-stdio-8B5CF6)](https://modelcontextprotocol.io/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-v1.36+-326CE5?logo=kubernetes)](https://kubernetes.io/)
 
-## Overview
+**Kube-MCP** is a production-grade Model Context Protocol (MCP) server that exposes Kubernetes clusters as structured, AI-callable tools. It enables LLM agents to introspect, diagnose, and remediate cluster issues through natural language—eliminating the need for `kubectl` expertise.
 
-Kubernetes operations demand deep expertise. Diagnosing a crashlooping pod requires cross-referencing pod events, container logs, resource limits, image pull status, and node pressure. Kube-MCP bridges the gap between LLM reasoning and Kubernetes by exposing your cluster's API as highly optimized, token-efficient MCP tools.
+---
 
-### Architecture
+## Table of Contents
 
-```text
+- [Architecture](#architecture)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage Examples](#usage-examples)
+- [Project Structure](#project-structure)
+- [Development](#development)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Architecture
+
+```
 ┌─────────────────────────┐        ┌─────────────────────────┐        ┌─────────────────────────┐
 │       LLM Client        │        │      Kube-MCP Server    │        │  Kubernetes API Server  │
 │ (Claude, Cursor, Cline) │◀──────▶│     (stdio transport)   │◀──────▶│                         │
 └─────────────────────────┘  MCP   └─────────────────────────┘  REST  └─────────────────────────┘
 ```
 
-Kube-MCP translates MCP JSON-RPC tool calls into strongly-typed Kubernetes Client-Go API requests. It intentionally trims heavy K8s manifests into lightweight JSON summaries so LLMs can process them without blowing up their context window.
+Kube-MCP translates MCP JSON-RPC tool calls into strongly-typed Kubernetes Client-Go API requests. Responses are intentionally optimized into lightweight JSON summaries, preserving LLM context windows while delivering actionable cluster data.
+
+### Key Design Principles
+
+- **Token-Efficient**: Trimmed responses prevent context window exhaustion
+- **Read-Only by Default**: Safe introspection without accidental mutations
+- **Auto-Detecting Environment**: Seamlessly works in-cluster or with local kubeconfig
+- **Graceful Degradation**: Continues operating even when metrics-server is unavailable
 
 ---
 
-## Features (M0 & M1)
+## Features
 
-Kube-MCP v1 provides a foundation tailored for robust, token-efficient read access to your cluster. 
+### Available MCP Tools
 
-### Available Tools
-
-| Category | Tool | Description |
-| :--- | :--- | :--- |
-| **Pods** | `list_pods` | Lists pods with status, restart counts, node placements, and age. Filterable by namespace. |
-| | `get_pod` | Fetches the detailed spec and status of a specific pod. |
-| | `get_logs` | Streams tailing logs from a specific container. Limits output to avoid token bloat. Includes `previous` flag for crashloop diagnostics. |
-| **Nodes** | `list_nodes` | Lists all nodes with readiness status, roles, kernel, and runtime versions. |
-| | `describe_node` | Fetches node capacity, allocatable resources, taints, and conditions. |
-| **Workloads** | `list_deployments` | Lists deployments alongside their replica status, availability, and active images. |
-| | `get_deployment` | Retrieves full deployment specs including rollout strategy. |
-| | `check_rollout_status` | Provides an instant snapshot of a Deployment's rollout progress. |
-| **Networking** | `list_services` | Lists services showing Type, ClusterIP, and mapped ports. |
-| | `list_ingresses` | Lists ingress rules, mapped hosts, and TLS status. |
-| **Storage & Config**| `get_pvc_status` | Shows PersistentVolumeClaim bindings, requested capacity, and storage classes. |
-| | `list_configmaps` | Lists ConfigMap names and their keys (values are truncated by default for safety). |
-| | `list_namespaces` | Lists all namespaces, statuses, and ages. |
-| **Events** | `get_events` | Fetches namespace-scoped events. Can be filtered by reason (e.g., `Failed`, `Evicted`). |
-| **Metrics** | `get_resource_usage`| Queries `metrics-server` for top CPU/Memory consumers. Supports cluster-wide summaries or drill-downs for specific nodes/pods. |
+| Category | Tool | Parameters | Description |
+|:---|:---|:---|:---|
+| **Pods** | `list_pods` | `namespace` | List pods with status, restarts, ready count, node, and age |
+| | `get_pod` | `name`, `namespace` | Fetch detailed pod specification and status |
+| | `get_logs` | `pod`, `namespace`, `container`, `tail`, `previous` | Stream container logs with 50KB cap and crashloop diagnostics |
+| **Nodes** | `list_nodes` | — | List nodes with readiness, roles, version, and OS |
+| | `describe_node` | `name` | Fetch node capacity, allocatable, taints, and conditions |
+| **Workloads** | `list_deployments` | `namespace` | List deployments with replica counts and availability |
+| | `get_deployment` | `name`, `namespace` | Fetch full deployment specification |
+| | `check_rollout_status` | `deployment`, `namespace` | Monitor deployment rollout progress |
+| **Networking** | `list_services` | `namespace` | List services with type, ClusterIP, and ports |
+| | `list_ingresses` | `namespace` | List ingresses with hosts and load balancer addresses |
+| **Storage** | `get_pvc_status` | `namespace` | List PVCs with binding status, capacity, and storage class |
+| **Config** | `list_configmaps` | `namespace` | List ConfigMaps with names and keys (values omitted for safety) |
+| **Namespaces** | `list_namespaces` | — | List namespaces with status phase and age |
+| **Events** | `get_events` | `namespace`, `reason` | Fetch namespace events with optional reason filtering |
+| **Metrics** | `get_resource_usage` | `pod_name`, `namespace`, `node_name` | Query CPU/memory usage (pod, node, or cluster-wide) |
 
 ---
 
 ## Prerequisites
 
-1. **Go 1.23+** installed on your system.
-2. A valid **KUBECONFIG** file or an active in-cluster ServiceAccount.
-3. *(Optional but Recommended)* `metrics-server` installed in your cluster for `get_resource_usage` to function.
+| Requirement | Version | Notes |
+|:---|:---|:---|
+| **Go** | 1.26+ | [Download](https://go.dev/dl/) |
+| **Kubernetes** | 1.24+ | Valid kubeconfig or in-cluster ServiceAccount |
+| **metrics-server** | Optional | Required for `get_resource_usage` tool |
+
+---
 
 ## Installation
 
-Clone the repository and build the binary:
+### Build from Source
 
 ```bash
 git clone https://github.com/Aamod007/Kube-MCP.git
@@ -61,34 +89,41 @@ cd Kube-MCP
 go build -o kubemcp ./cmd/server
 ```
 
-You can place the resulting `kubemcp` binary anywhere in your path (e.g., `/usr/local/bin/kubemcp`).
+### Install Binary
+
+```bash
+sudo install kubemcp /usr/local/bin/kubemcp
+```
+
+### Verify Installation
+
+```bash
+kubemcp --help
+```
 
 ---
 
-## Supported Platforms & Usage
+## Configuration
 
-Because Kube-MCP is built on the standard **Model Context Protocol (MCP)** using the `stdio` transport, it works **out-of-the-box** with any agent, editor, or CLI tool that supports the MCP standard.
+Kube-MCP uses the standard MCP `stdio` transport, making it compatible with any MCP-compliant client.
 
-Supported platforms include:
-- **Claude Desktop** & **Claude Code**
-- **Cursor**
-- **VS Code + GitHub Copilot** & **Copilot CLI**
-- **Cline**
-- **OpenCode**, **OpenClaw**, **Codex**
-- **Antigravity**, **Gemini CLI**, **Pi Agent**, **Vibe CLI**, **Hermes**, **KIMI CLI**
+### Environment Variables
 
-### Configuration Examples
+| Variable | Required | Default | Description |
+|:---|:---|:---|:---|
+| `KUBECONFIG` | No | `~/.kube/config` | Path to Kubernetes config file |
 
-Below are standard configuration patterns for popular platforms. Be sure to replace `/absolute/path/to/kubemcp` with the actual path to your built binary, and update the `KUBECONFIG` path for your environment.
+### Client Configuration
 
-#### 1. Claude Desktop
-Add to your configuration file (typically `~/Library/Application Support/Claude/claude_desktop_config.json`):
+#### Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "kubemcp": {
-      "command": "/absolute/path/to/kubemcp",
+      "command": "/usr/local/bin/kubemcp",
       "env": {
         "KUBECONFIG": "/Users/yourname/.kube/config"
       }
@@ -97,21 +132,24 @@ Add to your configuration file (typically `~/Library/Application Support/Claude/
 }
 ```
 
-#### 2. Cursor
-In Cursor, go to **Settings > Features > MCP**, click **Add New MCP Server**:
-- **Name:** `KubeMCP`
-- **Type:** `command`
-- **Command:** `/absolute/path/to/kubemcp`
-*Note: Ensure your terminal environment variables or Cursor environment is properly exposing `KUBECONFIG`.*
+#### Cursor
 
-#### 3. Cline
-Add to your `cline_mcp_settings.json` file:
+1. Navigate to **Settings > Features > MCP**
+2. Click **Add New MCP Server**
+3. Configure:
+   - **Name:** `KubeMCP`
+   - **Type:** `command`
+   - **Command:** `/usr/local/bin/kubemcp`
+
+#### Cline
+
+Edit `cline_mcp_settings.json`:
 
 ```json
 {
   "mcpServers": {
     "kubemcp": {
-      "command": "/absolute/path/to/kubemcp",
+      "command": "/usr/local/bin/kubemcp",
       "env": {
         "KUBECONFIG": "/Users/yourname/.kube/config"
       }
@@ -120,34 +158,146 @@ Add to your `cline_mcp_settings.json` file:
 }
 ```
 
-### Example AI Prompts
+### Supported Platforms
 
-Once configured, simply ask your AI agent:
-- *"List the pods in the default namespace."*
-- *"Why is the nginx deployment failing to start? Check the logs."*
-- *"Show me the top 5 pods using the most memory across the cluster."*
-- *"Find all Failed events in the kube-system namespace."*
+- Claude Desktop / Claude Code
+- Cursor
+- VS Code + GitHub Copilot
+- Cline
+- OpenCode / OpenClaw / Codex
+- Gemini CLI / Antigravity / Pi Agent
 
 ---
 
-## Development & Contributing
+## Usage Examples
 
-Kube-MCP is built using Go. The internal folder structure is organized as follows:
-- `cmd/server`: The main application entrypoint.
-- `internal/k8s`: Kubernetes Client-Go and `metrics-server` initialization wrappers.
-- `internal/tools`: The definitions and implementations of all MCP tools.
+Once configured, interact with your cluster using natural language:
 
-To run tests and formatting locally:
+```
+List all pods in the production namespace
+```
+
+```
+Why is the nginx deployment failing? Check the logs and events.
+```
+
+```
+Show me the top 5 pods by memory usage across the cluster
+```
+
+```
+Find all Failed events in kube-system from the last hour
+```
+
+```
+Describe the node worker-01 and check its resource pressure conditions
+```
+
+---
+
+## Project Structure
+
+```
+Kube-MCP/
+├── cmd/
+│   └── server/
+│       └── main.go              # Application entrypoint
+├── internal/
+│   ├── k8s/
+│   │   ├── client.go            # Kubernetes client initialization
+│   │   └── metrics.go           # Metrics-server API wrapper
+│   └── tools/
+│       ├── registry.go          # Tool registration dispatcher
+│       ├── helpers.go           # Shared response utilities
+│       ├── pods.go              # Pod management tools
+│       ├── nodes.go             # Node management tools
+│       ├── deployments.go       # Deployment & rollout tools
+│       ├── services.go          # Service & ingress tools
+│       ├── events.go            # Event querying tools
+│       ├── config.go            # ConfigMap tools
+│       ├── storage.go           # PVC status tools
+│       ├── namespaces.go        # Namespace listing tools
+│       └── resource.go          # CPU/memory usage tools
+├── go.mod
+├── go.sum
+└── README.md
+```
+
+---
+
+## Development
+
+### Code Quality
+
 ```bash
 go fmt ./...
 go vet ./...
 go build ./...
 ```
 
+### Run Locally
+
+```bash
+go run ./cmd/server
+```
+
+### Testing
+
+```bash
+go test ./... -v
+```
+
+---
+
 ## Roadmap
 
-Upcoming releases (M2 - M6) will introduce:
-- Write tools (read/write mode toggles) for `kubectl apply`, resource deletion, and strategic patching.
-- HTTP Server-Sent Events (SSE) transport implementation.
-- An example standalone Go-based agentic diagnostic loop.
-- Docker container publishing and Helm charts for in-cluster deployment.
+| Milestone | Features | Status |
+|:---|:---|:---|
+| **M0/M1** | Read-only tools, stdio transport | Completed |
+| **M2** | Write tools (apply, delete, patch) with read/write mode toggles | Planned |
+| **M3** | HTTP SSE transport for remote deployments | Planned |
+| **M4** | Agentic diagnostic loop (autonomous troubleshooting) | Planned |
+| **M5** | Docker container publishing | Planned |
+| **M6** | Helm charts for in-cluster deployment | Planned |
+
+---
+
+## Contributing
+
+Contributions are welcome! Please follow these steps:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'feat: add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+### Guidelines
+
+- Follow conventional commit messages
+- Add tests for new functionality
+- Update documentation for user-facing changes
+- Ensure `go fmt` and `go vet` pass before submitting
+
+---
+
+## Security
+
+- **Read-Only by Default**: All tools are introspection-only
+- **No Secret Exposure**: ConfigMap values are intentionally omitted
+- **Log Caps**: Log output is limited to 50KB to prevent token exhaustion
+- **RBAC Respected**: Operations are scoped to the configured ServiceAccount permissions
+
+---
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+## Acknowledgments
+
+- [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic
+- [Kubernetes Client-Go](https://github.com/kubernetes/client-go)
+- [mcp-go](https://github.com/mark3labs/mcp-go)
